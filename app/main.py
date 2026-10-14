@@ -446,141 +446,91 @@ def punch_in(body: PunchInIn):
 @app.post("/attendance/punch-out")
 
 def punch_out(body: PunchOutIn):
-
     employee = db.employees.find_one({"emp_code": body.emp_code})
 
     if employee is None:
-
         raise HTTPException(
-
             status_code=404,
-
             detail="Employee not found",
-
         )
 
     punch_time = parse_epoch_ms(body.punched_at)
-
     local_date = punch_time.astimezone(IST).date()
 
     candidate_dates = [
-
         local_date.isoformat(),
-
         (local_date - timedelta(days=1)).isoformat(),
-
     ]
 
+    # Find the latest relevant punch-in record, whether open or closed.
     record = db.attendance_logs.find_one(
-
         {
-
             "emp_code": body.emp_code,
-
             "date": {"$in": candidate_dates},
-
-            "punch_in": {"$lte": punch_time},
-
-            "punch_out": None,
-
         },
-
         sort=[("punch_in", -1)],
-
     )
 
     if record is None:
-
         raise HTTPException(
-
             status_code=404,
+            detail="No punch-in record found",
+        )
 
-            detail="No open punch-in record found",
-
+    # A closed record means this punch-out has already been recorded.
+    if record.get("punch_out") is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Punch-out already recorded",
         )
 
     if punch_time <= record["punch_in"]:
-
         raise HTTPException(
-
             status_code=422,
-
             detail="punch_out must be after punch_in",
-
         )
 
     if punch_time - record["punch_in"] > timedelta(hours=24):
-
         raise HTTPException(
-
             status_code=422,
-
             detail="Punch duration cannot exceed 24 hours",
-
         )
 
     work_hours = compute_work_hours(
-
         record["punch_in"],
-
         punch_time,
-
     )
 
     overtime = compute_overtime(
-
         punch_time,
-
         record["date"],
-
         employee,
-
     )
 
     updated = db.attendance_logs.find_one_and_update(
-
         {
-
             "_id": record["_id"],
-
             "punch_out": None,
-
             "punch_in": record["punch_in"],
-
         },
-
         {
-
             "$set": {
-
                 "punch_out": punch_time,
-
                 "work_hours": work_hours,
-
                 "overtime_minutes": overtime,
-
                 "half_day": work_hours < 4.50,
-
             }
-
         },
-
         return_document=ReturnDocument.AFTER,
-
     )
 
     if updated is None:
-
         raise HTTPException(
-
             status_code=409,
-
             detail="Punch-out already recorded or attendance changed",
-
         )
 
     return serialize_doc(updated)
-
 @app.patch("/attendance/{emp_code}/{date_str}")
 
 def correct_attendance(
